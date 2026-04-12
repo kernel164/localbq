@@ -79,6 +79,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Tabledata
 	mux.HandleFunc("GET "+tblPrefix+"/{tableId}/data", s.handleListTableData)
 
+	// Discovery endpoint for bq CLI compatibility
+	registerDiscovery(mux)
+
 	// Catch-all for unsupported BigQuery endpoints
 	mux.HandleFunc("/bigquery/", s.handleUnsupported)
 }
@@ -290,6 +293,13 @@ func (s *Server) handleInsertJob(w http.ResponseWriter, r *http.Request) {
 		"status":       map[string]any{"state": "DONE"},
 		"configuration": map[string]any{
 			"query": map[string]any{"query": query},
+		},
+		"statistics": map[string]any{
+			"totalBytesProcessed": "0",
+			"query": map[string]any{
+				"totalBytesProcessed": "0",
+				"statementType":       stmtType,
+			},
 		},
 	})
 }
