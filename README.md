@@ -1,5 +1,7 @@
 # LocalBQ
 
+> **Status: Under active development.** Not yet in a working state. Follow along or contribute, but don't depend on it for anything yet.
+
 A local BigQuery emulator powered by DuckDB. Run BigQuery workloads on your laptop, same API, same SQL, zero cloud cost.
 
 ```
@@ -12,7 +14,7 @@ Point any BigQuery client at `localhost:9060` and it works. No service account. 
 
 ## Why
 
-There is no official Google BigQuery emulator. The only alternative ([goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)) is SQLite-backed, one-person-maintained, and has 185+ open issues.
+There is no official Google BigQuery emulator. The main alternative ([goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)) is SQLite-backed and has 185+ open issues.
 
 LocalBQ is different:
 
