@@ -1,123 +1,17 @@
 # LocalBQ
 
-> **Status: Under active development.** Not yet in a working state. Follow along or contribute, but don't depend on it for anything yet.
-
-A local BigQuery emulator powered by DuckDB. Run BigQuery workloads on your laptop, same API, same SQL, zero cloud cost.
+A local BigQuery emulator powered by DuckDB. Run BigQuery workloads on your laptop — same API, same SQL, zero cloud cost.
 
 ```
-$ localbq up
-LocalBQ v0.1.0 — BigQuery emulator powered by DuckDB
+$ localbq --port 9060
+LocalBQ dev — BigQuery emulator powered by DuckDB
 REST API: http://localhost:9060
+DuckDB:   ~/.localbq/localbq.duckdb
 ```
 
 Point any BigQuery client at `localhost:9060` and it works. No service account. No GCP project. No scan costs.
 
-## Why
-
-There is no official Google BigQuery emulator. The main alternative ([goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator)) is SQLite-backed and has 185+ open issues.
-
-LocalBQ is different:
-
-- **DuckDB underneath.** Columnar, vectorized, Parquet/Arrow native. The right engine for analytics workloads.
-- **Real GoogleSQL parsing.** Uses Google's own [GoogleSQL](https://github.com/google/googlesql) analyzer (the same parser BigQuery uses) for correct SQL semantics.
-- **BigQuery REST API.** `jobs.query`, `jobs.insert`, `jobs.get`, `datasets.*`, `tables.*`, and more. Official clients work without code changes.
-
-## Architecture
-
-```
- BigQuery Clients (bq CLI, Python SDK, Go SDK, dbt)
-       │
-       │ HTTP REST (port 9060)
-       ▼
- ┌─────────────────────────────────────────────┐
- │             LocalBQ (Go binary)             │
- │                                             │
- │  ┌─────────────┐   ┌────────────────────┐   │
- │  │  REST API    │   │  Metadata Store    │   │
- │  │  (Layer 1)   │   │  (Layer 4)         │   │
- │  │              │   │  DuckDB _meta.*    │   │
- │  │  Routes BQ   │   │  schemas, jobs,    │   │
- │  │  endpoints   │   │  result handles    │   │
- │  └──────┬───────┘   └────────┬───────────┘   │
- │         │                    │               │
- │  ┌──────▼───────┐   ┌───────▼───────────┐   │
- │  │  Lowering    │   │  DuckDB Engine    │   │
- │  │  Pass        │   │  (Layer 3)        │   │
- │  │  (Layer 2)   │   │                   │   │
- │  │              │   │  Executes SQL,    │   │
- │  │  GoogleSQL   │   │  stores data,    │   │
- │  │  AST →       │   │  Parquet/CSV     │   │
- │  │  DuckDB SQL  │   │  ingestion       │   │
- │  └──────┬───────┘   └───────────────────┘   │
- │         │ gRPC                               │
- └─────────┼───────────────────────────────────┘
-           │
-           ▼
- ┌───────────────────┐
- │  GoogleSQL        │
- │  Sidecar          │
- │                   │
- │  Parse, Analyze,  │
- │  type resolution  │
- │  (C++ binary)     │
- └───────────────────┘
-```
-
-**Four layers:**
-
-1. **API Front Door** — Go HTTP server implementing the BigQuery REST API subset. Routes requests, returns BigQuery-shaped JSON responses and errors.
-
-2. **Lowering Pass** — Takes a resolved AST from GoogleSQL (with full type information, function signatures, column references) and emits DuckDB SQL. One rewrite rule per file, visitor pattern. Handles the differences between GoogleSQL and DuckDB: `QUALIFY`, `PIVOT`, `MERGE`, `UNNEST`, array subscripts.
-
-3. **DuckDB Engine** — Executes the lowered SQL. Embedded in-process via [duckdb-go](https://github.com/duckdb/duckdb-go). Handles data storage, Parquet/CSV ingestion, query execution.
-
-4. **Metadata Store** — Tracks projects, datasets, tables, jobs, and result handles in DuckDB internal schemas. Provides `INFORMATION_SCHEMA` views. Persists across restarts.
-
-**GoogleSQL Sidecar** — A separate process running Google's [GoogleSQL](https://github.com/google/googlesql) analyzer. LocalBQ starts it automatically on the first query and communicates via gRPC. This is the same approach Google's Java bindings use. It gives us correct GoogleSQL parsing without CGO or vendoring 558K lines of C++.
-
-## Features
-
-### Core (v0.1)
-
-- **BigQuery REST API** — `jobs.query`, `jobs.insert`, `jobs.get`, `jobs.list`, `jobs.getQueryResults`, `jobs.cancel`, `datasets.*`, `tables.*`, `tabledata.list`
-- **GoogleSQL compatibility** — Parsed and analyzed by Google's own SQL engine. Not a regex parser, not SQLGlot transpilation.
-- **DuckDB execution** — Native `STRUCT`, `ARRAY`, `JSON`, `MAP`. Columnar, vectorized.
-- **Data ingestion** — `LOAD DATA` DDL and `localbq load` CLI for Parquet and CSV
-- **INFORMATION_SCHEMA** — `TABLES`, `COLUMNS`, `PARTITIONS`, `JOBS`, `JOBS_BY_PROJECT`, `ROUTINES`, `VIEWS`
-- **Partitioning** — `PARTITION BY DATE(col)` accepted (logical). `_PARTITIONTIME` pseudo-columns.
-- **Anonymous auth** — Accepts any bearer token. Works with `BIGQUERY_EMULATOR_HOST` env var.
-
-### Differentiators (v0.1)
-
-- **GCS/Parquet federation** — `CREATE EXTERNAL TABLE` queries real GCS Parquet files via DuckDB's native GCS extension with ADC credentials.
-- **Dry-run cost projection** — `jobs.query` with `dryRun: true` returns estimated bytes scanned from DuckDB statistics.
-- **Contract-test mode** — Opt-in. Diffs emulator results against real BigQuery for fidelity validation.
-
-## Usage
-
-### Standalone
-
-```bash
-# Install (macOS)
-brew install slokam-ai/tap/localbq
-
-# Or download from GitHub Releases
-curl -fsSL https://github.com/slokam-ai/localbq/releases/latest/download/localbq_darwin_arm64.tar.gz | tar xz
-
-# Start
-localbq up
-
-# In another terminal
-export BIGQUERY_EMULATOR_HOST=localhost:9060
-bq query --use_legacy_sql=false 'SELECT 1+1 AS result'
-```
-
-### With LocalGCP
-
-```bash
-localgcp up --services=bigquery
-# BigQuery available at :9060 via Docker proxy
-```
+## Quick Start
 
 ### Docker
 
@@ -125,77 +19,164 @@ localgcp up --services=bigquery
 docker run -p 9060:9060 ghcr.io/slokam-ai/localbq:latest
 ```
 
-### Load data
+### From source
 
 ```bash
-# Via CLI
-localbq load myproject.mydataset.mytable data.parquet
-
-# Via SQL
-# In any BigQuery client connected to localbq:
-# LOAD DATA INTO myproject.mydataset.mytable FROM 'file:///path/to/data.parquet'
+go install github.com/slokam-ai/localbq/cmd/localbq@latest
+localbq --port 9060
 ```
 
-## Supported API Surface
+### Query it
+
+```bash
+curl -X POST http://localhost:9060/bigquery/v2/projects/my-project/queries \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "SELECT 1 + 1 AS result"}'
+```
+
+## Client SDKs
+
+### Python
+
+```python
+from google.cloud import bigquery
+from google.auth.credentials import AnonymousCredentials
+
+client = bigquery.Client(
+    project="my-project",
+    credentials=AnonymousCredentials(),
+    client_options={"api_endpoint": "http://localhost:9060"},
+)
+
+for row in client.query("SELECT 42 AS answer").result():
+    print(row.answer)  # 42
+```
+
+### Go
+
+```go
+client, _ := bigquery.NewClient(ctx, "my-project",
+    option.WithEndpoint("http://localhost:9060/bigquery/v2/"),
+    option.WithoutAuthentication(),
+)
+
+it, _ := client.Query("SELECT 42 AS answer").Read(ctx)
+```
+
+## Load Data
+
+```bash
+# From Parquet
+localbq load mydata.users users.parquet
+
+# From CSV
+localbq load mydata.events events.csv
+
+# Via SQL (from any connected client)
+LOAD DATA INTO mydata.users FROM '/path/to/users.parquet'
+```
+
+Supports Parquet, CSV, TSV, JSON, and NDJSON. If the table doesn't exist, it's created from the file schema. If it exists, data is appended.
+
+## What Works
+
+### API Endpoints
 
 | Endpoint | Status |
 |----------|--------|
-| `jobs.query` | v0.1 |
-| `jobs.insert` | v0.1 |
-| `jobs.get` | v0.1 |
-| `jobs.list` | v0.1 |
-| `jobs.getQueryResults` | v0.1 |
-| `jobs.cancel` | v0.1 (no-op) |
-| `datasets.*` (CRUD) | v0.1 |
-| `tables.*` (CRUD) | v0.1 |
-| `tabledata.list` | v0.1 |
-| `routines.*` (SQL UDFs) | v0.1 |
-| Storage Read/Write API | v0.2 |
-| BigQuery ML / BI Engine | Not planned |
+| `jobs.query` | Working (with GoogleSQL lowering) |
+| `jobs.insert` | Working (with dry-run support) |
+| `jobs.get` | Working |
+| `jobs.list` | Working |
+| `jobs.getQueryResults` | Working |
+| `datasets.*` (CRUD) | Working |
+| `tables.*` (CRUD) | Working |
+| `tabledata.list` | Working |
+| `jobs.cancel` | Stub (no-op) |
+
+### GoogleSQL Compatibility
+
+LocalBQ translates GoogleSQL syntax to DuckDB SQL. These patterns are supported:
+
+- `TIMESTAMP_SUB`, `TIMESTAMP_ADD`, `TIMESTAMP_TRUNC`
+- `DATE_SUB`, `DATE_ADD`, `DATE()` function
+- `CURRENT_TIMESTAMP()`, `CURRENT_DATE()` with parentheses
+- `COUNTIF()` → `count_if()`
+- `SAFE_CAST()` → `TRY_CAST()`
+- `FLOAT64`, `BOOL` type names
+- Backtick-quoted identifiers
+- `INFORMATION_SCHEMA` with regional prefix (`region-us.INFORMATION_SCHEMA.*`)
+- Three-part table references (project stripped)
+- `LOAD DATA INTO ... FROM '...'`
+
+### INFORMATION_SCHEMA Views
+
+| View | Status |
+|------|--------|
+| `TABLES` | Working (native DuckDB) |
+| `COLUMNS` | Working (native DuckDB) |
+| `JOBS_BY_PROJECT` | Working (tracks all executed queries) |
+| `TABLE_STORAGE` | Stub (zero-valued sizes) |
+| `TABLE_OPTIONS` | Stub |
+| `COLUMN_FIELD_PATHS` | Stub |
+
+### Other Features
+
+- **Dry-run** — `dryRun: true` validates queries without executing, returns 0 bytes processed
+- **Anonymous auth** — accepts any bearer token or no token at all
+- **Data persistence** — DuckDB file at `~/.localbq/localbq.duckdb`, survives restarts
+- **Job tracking** — every query is recorded and visible in `INFORMATION_SCHEMA.JOBS_BY_PROJECT`
 
 ## Known Limitations
 
-Things that work differently from real BigQuery:
+These GoogleSQL features are not yet supported and will return errors:
 
-- **Serialized execution.** Queries run one at a time behind a mutex. Fine for dev/CI. Concurrent execution is planned for v1.0.
-- **BIGNUMERIC.** DuckDB supports 38-digit `DECIMAL`. Values exceeding this return a clear error.
-- **GEOGRAPHY.** DuckDB spatial uses planar coordinates; BigQuery uses WGS84 geodesic. Returns `UNSUPPORTED_FEATURE`.
-- **Scripting.** `DECLARE`, stored procedures, JS UDFs are not supported.
-- **Clustering.** `CLUSTER BY` is accepted in DDL but has no execution impact.
+- `MERGE` with `WHEN NOT MATCHED BY SOURCE`
+- `QUALIFY` clause
+- `PIVOT` / `UNPIVOT`
+- `SELECT AS STRUCT`, `SELECT AS VALUE`
+- Complex `UNNEST` with explicit joins
+- `ARRAY_AGG(DISTINCT struct)`
+- Scripting (`DECLARE`, stored procedures, JS UDFs)
+- `GEOGRAPHY` type (WGS84 geodesic)
+- `BIGNUMERIC` beyond 38 digits
+- Storage Read/Write API (gRPC)
+- BigQuery ML / BI Engine
 
-Unsupported features return BigQuery-shaped error responses with reason `UNSUPPORTED_FEATURE`.
+Standard SQL that DuckDB supports natively (joins, CTEs, window functions, aggregations, subqueries) works without any lowering.
+
+## Architecture
+
+```
+ BigQuery Clients (Python SDK, Go SDK, bq CLI, dbt)
+       |
+       | HTTP REST (port 9060)
+       v
+ +---------------------------------------------+
+ |             LocalBQ (Go binary)              |
+ |                                              |
+ |  REST API --> Lowering Pass --> DuckDB Engine |
+ |                                              |
+ |  GoogleSQL      15 rewrite      Columnar,    |
+ |  patterns  -->  rules       --> vectorized,  |
+ |  (text-based)                   Parquet/CSV  |
+ |                                              |
+ |  Metadata Store (INFORMATION_SCHEMA, jobs)   |
+ +----------------------------------------------+
+```
+
+Single Go binary. DuckDB embedded via CGO. No external dependencies.
 
 ## Development
 
 ```bash
-# Prerequisites
-go 1.24+
-# GoogleSQL binary (downloaded automatically or from google/googlesql releases)
-
-# Build
 go build ./cmd/localbq/
-
-# Test
 go test ./...
-
-# Run
-./localbq up --port=9060
+./localbq --port 9060
 ```
-
-## How It Works
-
-LocalBQ uses a novel architecture: Google's own [GoogleSQL](https://github.com/google/googlesql) C++ analyzer runs as a sidecar process, communicating with the Go binary via gRPC. This gives us:
-
-- **Correct parsing.** The same parser BigQuery uses in production. Not an approximation.
-- **Resolved AST.** Full type information, function signatures, column references. The lowering pass knows exactly what it's transforming.
-- **No CGO for SQL.** The sidecar is a pre-built binary. The Go project only uses CGO for DuckDB (via the official Go driver).
-
-The lowering pass walks the resolved AST and emits DuckDB-compatible SQL. Where BigQuery and DuckDB agree (~80% of queries), the SQL passes through unchanged. Where they diverge (QUALIFY, PIVOT, MERGE, UNNEST), documented rewrite rules transform the AST.
 
 ## License
 
 MIT
 
-This project uses:
-- [GoogleSQL](https://github.com/google/googlesql) (Apache-2.0) for SQL parsing and analysis
-- [DuckDB](https://github.com/duckdb/duckdb) (MIT) for query execution
+This project uses [DuckDB](https://github.com/duckdb/duckdb) (MIT) for query execution.

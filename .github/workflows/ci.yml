@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -count=1 -race -timeout 120s
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t localbq:ci .
+
+      - name: Smoke test Docker image
+        run: |
+          docker run -d --name localbq-ci -p 9060:9060 localbq:ci
+          sleep 2
+          curl -sf http://localhost:9060/ | grep -q '"status":"ok"'
+          curl -sf -X POST http://localhost:9060/bigquery/v2/projects/test/queries \
+            -H 'Content-Type: application/json' \
+            -d '{"query":"SELECT 1 AS num"}' | grep -q '"totalRows":"1"'
+          docker rm -f localbq-ci

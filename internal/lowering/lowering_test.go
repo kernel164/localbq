@@ -183,6 +183,28 @@ func TestLower(t *testing.T) {
 				"WHERE error_result IS NOT NULL AND creation_time > (CURRENT_TIMESTAMP::TIMESTAMP - INTERVAL '12' HOUR)",
 		},
 
+		// LOAD DATA
+		{
+			name:  "LOAD DATA parquet",
+			input: "LOAD DATA INTO mydata.users FROM '/tmp/users.parquet'",
+			want:  "INSERT INTO mydata.users SELECT * FROM read_parquet('/tmp/users.parquet')",
+		},
+		{
+			name:  "LOAD DATA csv",
+			input: "LOAD DATA INTO ds.events FROM '/data/events.csv'",
+			want:  "INSERT INTO ds.events SELECT * FROM read_csv('/data/events.csv')",
+		},
+		{
+			name:  "LOAD DATA json",
+			input: "LOAD DATA INTO ds.logs FROM '/data/logs.jsonl'",
+			want:  "INSERT INTO ds.logs SELECT * FROM read_json('/data/logs.jsonl')",
+		},
+		{
+			name:  "LOAD DATA OVERWRITE",
+			input: "LOAD DATA OVERWRITE INTO ds.t FROM '/tmp/data.parquet'",
+			want:  "INSERT INTO ds.t SELECT * FROM read_parquet('/tmp/data.parquet')",
+		},
+
 		// Passthrough (already valid DuckDB SQL)
 		{
 			name:  "simple select passthrough",

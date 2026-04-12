@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/slokam-ai/localbq/internal/engine"
 	"github.com/slokam-ai/localbq/internal/lowering"
@@ -701,6 +702,13 @@ func formatValue(v any) any {
 		return strconv.FormatFloat(float64(val), 'f', -1, 32)
 	case []byte:
 		return string(val)
+	case time.Time:
+		// BigQuery encodes TIMESTAMP as microseconds since epoch (integer string)
+		// and DATE as "YYYY-MM-DD"
+		if val.Hour() == 0 && val.Minute() == 0 && val.Second() == 0 && val.Nanosecond() == 0 {
+			return val.Format("2006-01-02")
+		}
+		return strconv.FormatInt(val.UnixMicro(), 10)
 	default:
 		return fmt.Sprintf("%v", val)
 	}

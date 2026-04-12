@@ -8,6 +8,7 @@
 package lowering
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -88,6 +89,9 @@ func init() {
 
 	// __TABLES__ → information_schema.tables (legacy BQ metadata)
 	register("legacy_tables", lowerLegacyTables)
+
+	// LOAD DATA INTO table FROM 'file' → INSERT INTO table SELECT * FROM read_parquet/csv/json('file')
+	register("load_data", lowerLoadData)
 }
 
 // --- Rewrite implementations ---
@@ -259,3 +263,31 @@ var reLegacyTables = regexp.MustCompile(`(?i)\b__TABLES__\b`)
 func lowerLegacyTables(sql string) string {
 	return reLegacyTables.ReplaceAllString(sql, "information_schema.tables")
 }
+
+// LOAD DATA INTO <table> FROM '<file>'
+// BigQuery syntax: LOAD DATA [OVERWRITE] INTO <table> FROM FILES (uris=['gs://...'], format='PARQUET')
+// Simplified local syntax: LOAD DATA INTO <table> FROM '<local_file>'
+var reLoadData = regexp.MustCompile(
+	`(?i)^\s*LOAD\s+DATA\s+(?:OVERWRITE\s+)?INTO\s+(\S+)\s+FROM\s+'([^']+)'`)
+
+func lowerLoadData(sql string) string {
+	m := reLoadData.FindStringSubmatch(sql)
+	if m == nil {
+		return sql
+	}
+
+	table := m[1]
+	filePath := m[2]
+
+	ext := strings.ToLower(filePath)
+	readFunc := "read_parquet"
+	switch {
+	case strings.HasSuffix(ext, ".csv") || strings.HasSuffix(ext, ".tsv"):
+		readFunc = "read_csv"
+	case strings.HasSuffix(ext, ".json") || strings.HasSuffix(ext, ".jsonl") || strings.HasSuffix(ext, ".ndjson"):
+		readFunc = "read_json"
+	}
+
+	return fmt.Sprintf("INSERT INTO %s SELECT * FROM %s('%s')", table, readFunc, filePath)
+}
+

@@ -31,12 +31,26 @@ func defaultDataDir() string {
 }
 
 func main() {
-	flag.Parse()
-
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("localbq %s\n", version)
-		os.Exit(0)
+	// Handle subcommands before flag parsing
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version":
+			fmt.Printf("localbq %s\n", version)
+			os.Exit(0)
+		case "load":
+			// Separate flags from positional args for the load command
+			var positional []string
+			loadFlags := flag.NewFlagSet("load", flag.ExitOnError)
+			loadDataDir := loadFlags.String("data-dir", defaultDataDir(), "data directory for DuckDB database")
+			loadFlags.Parse(os.Args[2:])
+			positional = loadFlags.Args()
+			dataDir = loadDataDir
+			runLoad(positional)
+			return
+		}
 	}
+
+	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -46,15 +60,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Find and prepare the googlesql sidecar (started lazily on first query)
-	gsqlBinary, err := googlesql.FindBinary()
-	if err != nil {
-		slog.Warn("googlesql sidecar binary not found, SQL parsing will be unavailable", "error", err)
-	}
+	// GoogleSQL sidecar (optional — enhances SQL parsing if present)
+	gsqlBinary, _ := googlesql.FindBinary()
 	var sidecar *googlesql.Sidecar
 	if gsqlBinary != "" {
 		sidecar = googlesql.NewSidecar(gsqlBinary, *googlesqlTimeout)
 		defer sidecar.Stop()
+		slog.Info("googlesql sidecar found", "binary", gsqlBinary)
 	}
 
 	// Open DuckDB
@@ -81,16 +93,8 @@ func main() {
 	// Status endpoint at root
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		sidecarStatus := "not_configured"
-		if sidecar != nil {
-			if sidecar.Port() > 0 {
-				sidecarStatus = fmt.Sprintf("running (port %d)", sidecar.Port())
-			} else {
-				sidecarStatus = "ready (starts on first query)"
-			}
-		}
-		fmt.Fprintf(w, `{"kind":"localbq#status","version":"%s","status":"ok","duckdb":"%s","googlesql":"%s"}`,
-			version, dbPath, sidecarStatus)
+		fmt.Fprintf(w, `{"kind":"localbq#status","version":"%s","status":"ok","duckdb":"%s"}`,
+			version, dbPath)
 	})
 
 	addr := fmt.Sprintf(":%d", *port)

@@ -7,11 +7,6 @@ on:
         description: 'GoogleSQL release tag'
         required: true
         default: '2026.01.1'
-  push:
-    paths:
-      - 'sidecar/googlesql_server.cc'
-      - 'sidecar/BUILD.bazel'
-      - '.github/workflows/build-sidecar.yml'
 
 env:
   GOOGLESQL_VERSION: ${{ github.event.inputs.googlesql_version || '2026.01.1' }}

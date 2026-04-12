@@ -583,6 +583,52 @@ func TestQuery_LoweringPass(t *testing.T) {
 	}
 }
 
+func TestAnonymousAuth(t *testing.T) {
+	mux, cleanup := setup(t)
+	defer cleanup()
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	base := ts.URL + "/bigquery/v2/projects/myproject"
+
+	// No auth header at all
+	body := `{"query":"SELECT 1"}`
+	resp, err := http.Post(base+"/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("no-auth: status = %d, want 200", resp.StatusCode)
+	}
+
+	// Random bearer token
+	req, _ := http.NewRequest("POST", base+"/queries", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer some-random-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("random-token: status = %d, want 200", resp.StatusCode)
+	}
+
+	// Google-style OAuth token
+	req, _ = http.NewRequest("POST", base+"/queries", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer ya29.fake-oauth-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("oauth-token: status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestDryRun_QueryEndpoint(t *testing.T) {
 	mux, cleanup := setup(t)
 	defer cleanup()
