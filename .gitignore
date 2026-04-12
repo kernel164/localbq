@@ -1,0 +1,34 @@
+# Binaries (the compiled binary, not the source directory)
+/localbq
+bin/
+*.exe
+*.dylib
+*.so
+
+# Build
+dist/
+
+# Data
+*.db
+*.duckdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Tool state
+.omx/
+
+# OS
+.DS_Store
+
+# Test
+coverage.out
+
+# Private design docs (not for public repo)
+DESIGN.md
+TODOS.md
+LEARNINGS.md
+research/
+.claude/
