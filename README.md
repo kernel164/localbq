@@ -3,7 +3,7 @@
 A local BigQuery emulator powered by DuckDB. Run BigQuery workloads on your laptop — same API, same SQL, zero cloud cost.
 
 ```
-$ localbq --port 9060
+$ localbq up
 LocalBQ dev — BigQuery emulator powered by DuckDB
 REST API: http://localhost:9060
 DuckDB:   ~/.localbq/localbq.duckdb
@@ -23,18 +23,38 @@ docker run -p 9060:9060 ghcr.io/slokam-ai/localbq:latest
 
 ```bash
 go install github.com/slokam-ai/localbq/cmd/localbq@latest
-localbq --port 9060
+localbq up
 ```
 
 ### Query it
 
 ```bash
-curl -X POST http://localhost:9060/bigquery/v2/projects/my-project/queries \
-  -H 'Content-Type: application/json' \
-  -d '{"query": "SELECT 1 + 1 AS result"}'
+# One env var — your existing bq CLI just works
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_BIGQUERY=http://localhost:9060/
+bq --project_id=my-project query --use_legacy_sql=false 'SELECT 1 + 1 AS result'
+```
+
+```
++--------+
+| result |
++--------+
+|      2 |
++--------+
 ```
 
 ## Client SDKs
+
+### bq CLI
+
+No code changes needed. One env var:
+
+```bash
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_BIGQUERY=http://localhost:9060/
+
+bq --project_id=my-project query --use_legacy_sql=false 'SELECT 1 + 1 AS result'
+bq --project_id=my-project ls                    # list datasets
+bq --project_id=my-project mk my_dataset         # create dataset
+```
 
 ### Python
 
@@ -61,6 +81,52 @@ client, _ := bigquery.NewClient(ctx, "my-project",
 )
 
 it, _ := client.Query("SELECT 42 AS answer").Read(ctx)
+```
+
+## Switching Between LocalBQ and Production
+
+LocalBQ is designed for seamless switching. No config files to edit, no code to change.
+
+### bq CLI
+
+```bash
+# Use LocalBQ
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_BIGQUERY=http://localhost:9060/
+bq query --use_legacy_sql=false 'SELECT 1'  # → hits LocalBQ
+
+# Switch back to real BigQuery
+unset CLOUDSDK_API_ENDPOINT_OVERRIDES_BIGQUERY
+bq query --use_legacy_sql=false 'SELECT 1'  # → hits Google Cloud
+```
+
+### Python / Go
+
+Use an env var check so the same code works in both environments:
+
+```python
+import os
+from google.cloud import bigquery
+from google.auth.credentials import AnonymousCredentials
+
+endpoint = os.getenv("LOCALBQ_ENDPOINT")
+if endpoint:
+    client = bigquery.Client(
+        project="my-project",
+        credentials=AnonymousCredentials(),
+        client_options={"api_endpoint": endpoint},
+    )
+else:
+    client = bigquery.Client()  # normal GCP auth + production endpoint
+```
+
+```go
+if endpoint := os.Getenv("LOCALBQ_ENDPOINT"); endpoint != "" {
+    client, _ = bigquery.NewClient(ctx, project,
+        option.WithEndpoint(endpoint+"/bigquery/v2/"),
+        option.WithoutAuthentication())
+} else {
+    client, _ = bigquery.NewClient(ctx, project)
+}
 ```
 
 ## Load Data
