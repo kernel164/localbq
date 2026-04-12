@@ -27,8 +27,11 @@ dist/
 coverage.out
 
 # Private design docs (not for public repo)
-DESIGN.md
+DESIGN*.md
 TODOS.md
 LEARNINGS.md
+FINAL-BUILD-PLAN.md
+*-research-report.md
+*-architecture-report.md
 research/
 .claude/
