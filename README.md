@@ -23,7 +23,10 @@ docker run -p 9060:9060 ghcr.io/slokam-ai/localbq:latest
 
 ```bash
 go install github.com/slokam-ai/localbq/cmd/localbq@latest
-localbq up
+localbq up        # foreground
+localbq up -d     # background (daemon mode)
+localbq status    # check if running
+localbq stop      # stop background instance
 ```
 
 ### Query it

@@ -30,10 +30,14 @@ func defaultDataDir() string {
 	return home + "/.localbq"
 }
 
+var daemon = flag.Bool("d", false, "run in background (daemon mode)")
+
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage: localbq <command> [flags]\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
-	fmt.Fprintf(os.Stderr, "  up        Start the BigQuery emulator\n")
+	fmt.Fprintf(os.Stderr, "  up        Start the BigQuery emulator (add -d for background)\n")
+	fmt.Fprintf(os.Stderr, "  stop      Stop a running background instance\n")
+	fmt.Fprintf(os.Stderr, "  status    Check if LocalBQ is running\n")
 	fmt.Fprintf(os.Stderr, "  load      Load data from Parquet/CSV/JSON into a table\n")
 	fmt.Fprintf(os.Stderr, "  version   Print version\n")
 	fmt.Fprintf(os.Stderr, "\nRun 'localbq <command> --help' for details.\n")
@@ -56,6 +60,16 @@ func main() {
 		case "up":
 			// Strip "up" from args so flag.Parse sees the flags
 			os.Args = append(os.Args[:1], os.Args[2:]...)
+		case "stop":
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+			flag.Parse()
+			runStop()
+			return
+		case "status":
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+			flag.Parse()
+			runStatus()
+			return
 		case "help", "--help", "-h":
 			usage()
 			os.Exit(0)
@@ -63,6 +77,12 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// Daemon mode: re-exec in background
+	if *daemon {
+		daemonStart()
+		return
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
