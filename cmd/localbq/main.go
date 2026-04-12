@@ -30,6 +30,15 @@ func defaultDataDir() string {
 	return home + "/.localbq"
 }
 
+func usage() {
+	fmt.Fprintf(os.Stderr, "Usage: localbq <command> [flags]\n\n")
+	fmt.Fprintf(os.Stderr, "Commands:\n")
+	fmt.Fprintf(os.Stderr, "  up        Start the BigQuery emulator\n")
+	fmt.Fprintf(os.Stderr, "  load      Load data from Parquet/CSV/JSON into a table\n")
+	fmt.Fprintf(os.Stderr, "  version   Print version\n")
+	fmt.Fprintf(os.Stderr, "\nRun 'localbq <command> --help' for details.\n")
+}
+
 func main() {
 	// Handle subcommands before flag parsing
 	if len(os.Args) > 1 {
@@ -38,15 +47,18 @@ func main() {
 			fmt.Printf("localbq %s\n", version)
 			os.Exit(0)
 		case "load":
-			// Separate flags from positional args for the load command
-			var positional []string
 			loadFlags := flag.NewFlagSet("load", flag.ExitOnError)
 			loadDataDir := loadFlags.String("data-dir", defaultDataDir(), "data directory for DuckDB database")
 			loadFlags.Parse(os.Args[2:])
-			positional = loadFlags.Args()
 			dataDir = loadDataDir
-			runLoad(positional)
+			runLoad(loadFlags.Args())
 			return
+		case "up":
+			// Strip "up" from args so flag.Parse sees the flags
+			os.Args = append(os.Args[:1], os.Args[2:]...)
+		case "help", "--help", "-h":
+			usage()
+			os.Exit(0)
 		}
 	}
 
