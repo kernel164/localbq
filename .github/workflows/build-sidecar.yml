@@ -1,0 +1,80 @@
+name: Build GoogleSQL Sidecar
+
+on:
+  workflow_dispatch:
+    inputs:
+      googlesql_version:
+        description: 'GoogleSQL release tag'
+        required: true
+        default: '2026.01.1'
+  push:
+    paths:
+      - 'sidecar/**'
+
+env:
+  GOOGLESQL_VERSION: ${{ github.event.inputs.googlesql_version || '2026.01.1' }}
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone googlesql
+        run: |
+          git clone --depth 1 --branch ${{ env.GOOGLESQL_VERSION }} \
+            https://github.com/google/googlesql.git /tmp/googlesql
+
+      - name: Copy server source into googlesql tree
+        run: |
+          cp sidecar/googlesql_server.cc /tmp/googlesql/sidecar/googlesql_server.cc
+          cp sidecar/BUILD.bazel /tmp/googlesql/sidecar/BUILD.bazel
+
+      - name: Install Bazelisk
+        run: |
+          curl -fsSL https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64 \
+            -o /usr/local/bin/bazel && chmod +x /usr/local/bin/bazel
+
+      - name: Install tzdata
+        run: sudo apt-get update && sudo apt-get install -y tzdata
+
+      - name: Build googlesql_server
+        working-directory: /tmp/googlesql
+        run: bazel build -c opt //sidecar:googlesql_server
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: googlesql_server_linux_amd64
+          path: /tmp/googlesql/bazel-bin/sidecar/googlesql_server
+
+  build-macos:
+    runs-on: macos-14  # ARM64 runner
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone googlesql
+        run: |
+          git clone --depth 1 --branch ${{ env.GOOGLESQL_VERSION }} \
+            https://github.com/google/googlesql.git /tmp/googlesql
+
+      - name: Copy server source into googlesql tree
+        run: |
+          cp sidecar/googlesql_server.cc /tmp/googlesql/sidecar/googlesql_server.cc
+          cp sidecar/BUILD.bazel /tmp/googlesql/sidecar/BUILD.bazel
+
+      - name: Install Bazelisk
+        run: |
+          brew install bazelisk
+
+      - name: Build googlesql_server
+        working-directory: /tmp/googlesql
+        run: bazel build -c opt //sidecar:googlesql_server
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: googlesql_server_darwin_arm64
+          path: /tmp/googlesql/bazel-bin/sidecar/googlesql_server
