@@ -192,7 +192,7 @@ The lowering pass walks the resolved AST and emits DuckDB-compatible SQL. Where 
 
 ## License
 
-Apache-2.0
+MIT
 
 This project uses:
 - [GoogleSQL](https://github.com/google/googlesql) (Apache-2.0) for SQL parsing and analysis
