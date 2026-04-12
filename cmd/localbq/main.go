@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/slokam-ai/localbq/internal/api"
+	"github.com/slokam-ai/localbq/internal/engine"
 	"github.com/slokam-ai/localbq/internal/googlesql"
+	"github.com/slokam-ai/localbq/internal/meta"
 )
 
 var (
@@ -54,16 +57,29 @@ func main() {
 		defer sidecar.Stop()
 	}
 
-	apiServer := api.New()
+	// Open DuckDB
+	dbPath := filepath.Join(*dataDir, "localbq.duckdb")
+	eng, err := engine.Open(dbPath)
+	if err != nil {
+		slog.Error("failed to open DuckDB", "path", dbPath, "error", err)
+		os.Exit(1)
+	}
+	defer eng.Close()
+
+	// Initialize INFORMATION_SCHEMA views
+	if err := meta.InitInfoSchema(context.Background(), eng); err != nil {
+		slog.Error("failed to initialize INFORMATION_SCHEMA", "error", err)
+		os.Exit(1)
+	}
+
+	store := meta.NewStore(eng)
 	mux := http.NewServeMux()
 
+	// Register BigQuery API routes directly on mux
+	api.New(mux, eng, store)
+
 	// Status endpoint at root
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			// Fall through to API server for non-root paths
-			apiServer.Handler().ServeHTTP(w, r)
-			return
-		}
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		sidecarStatus := "not_configured"
 		if sidecar != nil {
@@ -73,11 +89,9 @@ func main() {
 				sidecarStatus = "ready (starts on first query)"
 			}
 		}
-		fmt.Fprintf(w, `{"kind":"localbq#status","version":"%s","status":"ok","googlesql":"%s"}`, version, sidecarStatus)
+		fmt.Fprintf(w, `{"kind":"localbq#status","version":"%s","status":"ok","duckdb":"%s","googlesql":"%s"}`,
+			version, dbPath, sidecarStatus)
 	})
-
-	// BigQuery API routes
-	mux.Handle("/bigquery/", apiServer.Handler())
 
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{
@@ -94,6 +108,7 @@ func main() {
 	go func() {
 		fmt.Fprintf(os.Stderr, "LocalBQ %s — BigQuery emulator powered by DuckDB\n", version)
 		fmt.Fprintf(os.Stderr, "REST API: http://localhost%s\n", addr)
+		fmt.Fprintf(os.Stderr, "DuckDB:   %s\n", dbPath)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "error", err)
 			os.Exit(1)
