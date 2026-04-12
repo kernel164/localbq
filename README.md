@@ -153,6 +153,30 @@ These GoogleSQL features are not yet supported:
 
 Standard SQL that DuckDB supports natively (joins, CTEs, window functions, aggregations, subqueries) works without any lowering.
 
+## Roadmap
+
+### GoogleSQL Sidecar (coming soon)
+
+LocalBQ currently uses text-based rewriting for GoogleSQL → DuckDB translation. This covers common patterns (timestamp functions, type names, backtick identifiers, INFORMATION_SCHEMA). For advanced GoogleSQL features, an optional **GoogleSQL sidecar** is in development.
+
+The sidecar is a gRPC server wrapping Google's own [googlesql](https://github.com/google/googlesql) C++ analyzer — the same parser BigQuery uses in production. When present, it provides:
+
+- **QUALIFY** clause rewriting
+- **PIVOT / UNPIVOT** transformation
+- **MERGE** with `WHEN NOT MATCHED BY SOURCE`
+- **SELECT AS STRUCT / VALUE**
+- Complex **UNNEST** with explicit JOIN rewriting
+- Exact type coercion and function signature resolution
+
+The sidecar is opt-in. LocalBQ auto-detects it if the binary is in PATH. Without it, text-based lowering handles the common 80% of queries. The architecture is already wired — sidecar manager, proto client, and health checks are implemented.
+
+### Other planned features
+
+- **GCS/Parquet federation** — `CREATE EXTERNAL TABLE` querying real GCS Parquet files
+- **Contract-test mode** — opt-in diff engine comparing local results against real BigQuery
+- **dbt-bigquery adapter** — side-loaded adapter for `dbt-bigquery` without auth
+- **Storage Read/Write API** — gRPC Arrow-based bulk data access
+
 ## Development
 
 ```bash
