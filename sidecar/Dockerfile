@@ -22,8 +22,11 @@ COPY sidecar/googlesql_server.cc /googlesql/googlesql/sidecar/googlesql_server.c
 COPY sidecar/BUILD.bazel /googlesql/googlesql/sidecar/BUILD.bazel
 
 # Build (target path is //googlesql/sidecar since it's inside the tree)
+# --spawn_strategy=local disables Bazel sandboxing to avoid rules_foreign_cc
+# failures on ARM64 Docker where the sandbox breaks C compiler detection.
 RUN bazel build -c opt //googlesql/sidecar:googlesql_server \
-    --action_env=CC=gcc --action_env=CXX=g++
+    --action_env=CC=gcc --action_env=CXX=g++ \
+    --spawn_strategy=local
 
 RUN mkdir -p /output && \
     cp bazel-bin/googlesql/sidecar/googlesql_server /output/googlesql_server
