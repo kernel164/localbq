@@ -30,6 +30,8 @@ import (
 	"sync"
 	"time"
 
+	duckdb "github.com/marcboeker/go-duckdb"
+
 	"github.com/slokam-ai/localbq/internal/engine"
 	"github.com/slokam-ai/localbq/internal/lowering"
 	"github.com/slokam-ai/localbq/internal/meta"
@@ -210,6 +212,10 @@ func (s *Server) handleDryRun(w http.ResponseWriter, r *http.Request, project, o
 
 // insertJobRequest is the body of POST /jobs (jobs.insert).
 type insertJobRequest struct {
+	JobReference *struct {
+		ProjectId string `json:"projectId,omitempty"`
+		JobId     string `json:"jobId,omitempty"`
+	} `json:"jobReference,omitempty"`
 	Configuration struct {
 		Query struct {
 			Query        string `json:"query"`
@@ -236,7 +242,28 @@ func (s *Server) handleInsertJob(w http.ResponseWriter, r *http.Request) {
 
 	duckSQL := lowering.Lower(query)
 	stmtType := meta.ClassifyStatement(query)
-	jobID := newJobID()
+
+	// Honors a caller-supplied JobReference.JobId (gcpbilling's own startQuery,
+	// pkg/adapters/gcpbilling/plan.go, insists on this precisely so a retried
+	// Fetch adopts the same job rather than starting a second one it pays for
+	// twice — its own comment there calls this "the whole retry-safety story").
+	// A repeat call naming a job that already completed is BigQuery's own
+	// documented idempotent no-op: answered from the stored job, the query
+	// never runs twice.
+	var requestedJobID string
+	if req.JobReference != nil {
+		requestedJobID = req.JobReference.JobId
+	}
+	if requestedJobID != "" {
+		if existing, ok := s.store.GetJob(requestedJobID); ok {
+			writeJobResponse(w, existing)
+			return
+		}
+	}
+	jobID := requestedJobID
+	if jobID == "" {
+		jobID = newJobID()
+	}
 
 	if req.Configuration.DryRun {
 		result, err := s.eng.DryRun(r.Context(), duckSQL)
@@ -299,6 +326,35 @@ func (s *Server) handleInsertJob(w http.ResponseWriter, r *http.Request) {
 			"query": map[string]any{
 				"totalBytesProcessed": "0",
 				"statementType":       stmtType,
+			},
+		},
+	})
+}
+
+// writeJobResponse answers a repeat Jobs.insert call naming an already
+// completed job's own id, BigQuery's own documented idempotent no-op for a
+// retried insert (gcpbilling's own startQuery, plan.go, is the caller relying
+// on it — see its own doc). The query itself never runs a second time; this
+// only replays job's already-recorded outcome, success or failure alike, the
+// same outcome the first insert call already returned for this id.
+func writeJobResponse(w http.ResponseWriter, job *meta.Job) {
+	if job.Status.Error != nil {
+		writeError(w, http.StatusBadRequest, "invalidQuery", *job.Status.Error)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"kind":         "bigquery#job",
+		"jobReference": job.JobReference,
+		"status":       map[string]any{"state": string(job.Status.State)},
+		"configuration": map[string]any{
+			"query": map[string]any{"query": job.Config.Query},
+		},
+		"statistics": map[string]any{
+			"totalBytesProcessed": "0",
+			"query": map[string]any{
+				"totalBytesProcessed": "0",
+				"statementType":       meta.ClassifyStatement(job.Config.Query),
 			},
 		},
 	})
@@ -500,6 +556,7 @@ type createTableRequest struct {
 			Mode string           `json:"mode,omitempty"`
 		} `json:"fields"`
 	} `json:"schema"`
+	TimePartitioning *meta.TimePartitioning `json:"timePartitioning,omitempty"`
 }
 
 func (s *Server) handleListTables(w http.ResponseWriter, r *http.Request) {
@@ -549,6 +606,16 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Recorded before the DDL attempt below, not after: a caller's Tables.insert
+	// names its intended TimePartitioning every time it calls, including a
+	// repeat call against a table that already physically exists (gcpseed's
+	// own ensureTable calls Tables.insert on every pass and tolerates the
+	// "already exists" CREATE TABLE failure that follows, by design -- see
+	// tools/internal/gcpdemoestate.TableInsertMetadata's own doc). Gating this
+	// on the DDL succeeding would silently drop the caller's declared
+	// partitioning on every call after the table's first, physical creation.
+	s.store.SetTablePartitioning(datasetID, tableID, req.TimePartitioning)
+
 	// Build CREATE TABLE DDL
 	ddl := buildCreateTableDDL(datasetID, tableID, req.Schema.Fields)
 	if err := s.eng.Exec(r.Context(), ddl); err != nil {
@@ -562,14 +629,19 @@ func (s *Server) handleCreateTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"kind":           "bigquery#table",
 		"tableReference": tbl.TableReference,
 		"schema":         tbl.Schema,
 		"type":           tbl.Type,
 		"creationTime":   tbl.CreationTime,
-	})
+	}
+	if tbl.TimePartitioning != nil {
+		resp["timePartitioning"] = tbl.TimePartitioning
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleGetTable(w http.ResponseWriter, r *http.Request) {
@@ -583,15 +655,20 @@ func (s *Server) handleGetTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"kind":           "bigquery#table",
 		"tableReference": tbl.TableReference,
 		"schema":         tbl.Schema,
 		"type":           tbl.Type,
 		"numRows":        tbl.NumRows,
 		"creationTime":   tbl.CreationTime,
-	})
+	}
+	if tbl.TimePartitioning != nil {
+		resp["timePartitioning"] = tbl.TimePartitioning
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleDeleteTable(w http.ResponseWriter, r *http.Request) {
@@ -713,12 +790,26 @@ func formatValue(v any) any {
 	case []byte:
 		return string(val)
 	case time.Time:
-		// BigQuery encodes TIMESTAMP as microseconds since epoch (integer string)
-		// and DATE as "YYYY-MM-DD"
+		// BigQuery's REST API encodes TIMESTAMP as a floating-point number of
+		// seconds since epoch (a string, like every other field this handler
+		// emits) and DATE as "YYYY-MM-DD". This used to emit UnixMicro() as a
+		// bare integer string, which is not that convention (nor any other
+		// documented BigQuery wire shape) and silently produced a wildly wrong
+		// date in any downstream client that parsed it as seconds, the way
+		// invisibl-aether's gcpbilling.parseBillingTime's numeric fallback does.
 		if val.Hour() == 0 && val.Minute() == 0 && val.Second() == 0 && val.Nanosecond() == 0 {
 			return val.Format("2006-01-02")
 		}
-		return strconv.FormatInt(val.UnixMicro(), 10)
+		seconds := float64(val.UnixNano()) / 1e9
+		return strconv.FormatFloat(seconds, 'f', 6, 64)
+	case duckdb.Decimal:
+		// go-duckdb's Decimal carries Width/Scale/Value (a *big.Int) and only
+		// renders correctly through its own String(), which has a pointer
+		// receiver — fmt's default formatting of a non-addressable interface
+		// value falls back to printing the struct fields raw (e.g. "{18 3
+		// 4000}" for 4.000), which is not a valid BigQuery NUMERIC/BIGNUMERIC
+		// wire value. val is a local copy here, so it is addressable.
+		return val.String()
 	default:
 		return fmt.Sprintf("%v", val)
 	}

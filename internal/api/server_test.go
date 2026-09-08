@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/slokam-ai/localbq/internal/api"
 	"github.com/slokam-ai/localbq/internal/engine"
@@ -375,6 +377,63 @@ func TestQuery_AgainstTable(t *testing.T) {
 	}
 	if vals[0] != "1" || vals[1] != "2" || vals[2] != "3" {
 		t.Errorf("values = %v, want [1 2 3]", vals)
+	}
+}
+
+// TestQuery_NumericAndTimestampWireFormat pins down two formatValue bugs
+// found by pointing invisibl-aether's real gcpbilling adapter at LocalBQ:
+// a NUMERIC/DECIMAL column rendered its Go driver struct raw ("{18 3 4000}"
+// instead of "4"), and a non-midnight TIMESTAMP rendered as a bare
+// microseconds-since-epoch integer instead of BigQuery's own documented
+// floating-point-seconds-since-epoch string.
+func TestQuery_NumericAndTimestampWireFormat(t *testing.T) {
+	mux, cleanup := setup(t)
+	defer cleanup()
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	base := ts.URL + "/bigquery/v2/projects/myproject"
+
+	http.Post(base+"/datasets", "application/json", bytes.NewBufferString(`{"datasetReference":{"datasetId":"ds1"}}`))
+	body := `{"query":"CREATE TABLE ds1.t1 (id BIGINT, credits STRUCT(amount DOUBLE)[], ts TIMESTAMP)"}`
+	http.Post(base+"/queries", "application/json", bytes.NewBufferString(body))
+
+	body = `{"query":"INSERT INTO ds1.t1 VALUES (1, [{'amount': 1.5}, {'amount': 2.5}], TIMESTAMP '2026-06-01 12:00:00.123456')"}`
+	resp, err := http.Post(base+"/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// The exact shape pkg/adapters/gcpbilling/plan.go's billingRowSelect uses
+	// for credits_total, unmodified.
+	body = `{"query":"SELECT ts, CAST(IFNULL((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM UNNEST(credits) AS c), 0) AS NUMERIC) AS credits_total FROM ds1.t1"}`
+	resp, err = http.Post(base+"/queries", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("query: status = %d, body = %v", resp.StatusCode, result)
+	}
+	rows := result["rows"].([]any)
+	f := rows[0].(map[string]any)["f"].([]any)
+	gotTS := f[0].(map[string]any)["v"].(string)
+	gotCredits := f[1].(map[string]any)["v"].(string)
+
+	if gotCredits != "4" {
+		t.Errorf("credits_total = %q, want %q (was rendering the driver's Decimal struct raw)", gotCredits, "4")
+	}
+	seconds, err := strconv.ParseFloat(gotTS, 64)
+	if err != nil {
+		t.Fatalf("ts = %q, not a floating-point seconds-since-epoch string: %v", gotTS, err)
+	}
+	wantSeconds := float64(time.Date(2026, 6, 1, 12, 0, 0, 123456000, time.UTC).UnixNano()) / 1e9
+	if diff := seconds - wantSeconds; diff > 1e-6 || diff < -1e-6 {
+		t.Errorf("ts = %q (%v seconds), want %v seconds (2026-06-01T12:00:00.123456Z) — was previously UnixMicro() rendered as a bare integer", gotTS, seconds, wantSeconds)
 	}
 }
 

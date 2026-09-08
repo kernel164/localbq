@@ -50,11 +50,29 @@ type TableSchema struct {
 
 // Table holds BigQuery table metadata.
 type Table struct {
-	TableReference TableRef    `json:"tableReference"`
-	Schema         TableSchema `json:"schema"`
-	NumRows        string      `json:"numRows"`
-	CreationTime   string      `json:"creationTime"`
-	Type           string      `json:"type"`
+	TableReference   TableRef          `json:"tableReference"`
+	Schema           TableSchema       `json:"schema"`
+	NumRows          string            `json:"numRows"`
+	CreationTime     string            `json:"creationTime"`
+	Type             string            `json:"type"`
+	TimePartitioning *TimePartitioning `json:"timePartitioning,omitempty"`
+}
+
+// TimePartitioning is the subset of BigQuery's own TimePartitioning wire
+// shape (google.golang.org/api/bigquery/v2.TimePartitioning) this store
+// round-trips: Type and Field, the two fields a client reads back to tell an
+// ingestion-time partitioned table (Field empty, per that type's own doc:
+// "If not set, the table is partitioned by pseudo column '_PARTITIONTIME'")
+// from a field-partitioned one apart. DuckDB has no native partitioning
+// concept, so this carries no engine behavior of its own -- Tables.insert's
+// declared value is simply held here so a later Tables.get echoes back the
+// same answer a real detailed billing export would, rather than always
+// looking unpartitioned-by-ingestion-time the way every table did before
+// this existed, which sent invisibl-aether's gcpbilling adapter down its
+// _PARTITIONTIME branch even for a table field-partitioned on export_time.
+type TimePartitioning struct {
+	Type  string `json:"type,omitempty"`
+	Field string `json:"field,omitempty"`
 }
 
 // JobState represents the state of a BigQuery job.
@@ -94,18 +112,25 @@ type JobConfig struct {
 
 // Store manages metadata backed by a DuckDB engine.
 type Store struct {
-	engine  *engine.Engine
-	mu      sync.RWMutex
-	jobs    map[string]*Job
+	engine   *engine.Engine
+	mu       sync.RWMutex
+	jobs     map[string]*Job
 	datasets map[string]*Dataset // key: datasetId
+	// partitioning holds each table's declared TimePartitioning, keyed by
+	// "datasetId.tableId". Nothing else about a table is tracked here --
+	// GetTable derives the rest fresh from DuckDB on every call -- because
+	// TimePartitioning is the one property Tables.insert can declare that
+	// DuckDB's own schema has no column for at all.
+	partitioning map[string]*TimePartitioning
 }
 
 // NewStore creates a metadata store backed by the given engine.
 func NewStore(eng *engine.Engine) *Store {
 	return &Store{
-		engine:   eng,
-		jobs:     make(map[string]*Job),
-		datasets: make(map[string]*Dataset),
+		engine:       eng,
+		jobs:         make(map[string]*Job),
+		datasets:     make(map[string]*Dataset),
+		partitioning: make(map[string]*TimePartitioning),
 	}
 }
 
@@ -176,6 +201,25 @@ func (s *Store) DeleteDataset(ctx context.Context, datasetID string, deleteConte
 
 // --- Table operations ---
 
+// partitioningKey is the tablePartitioning map key for one table.
+func partitioningKey(datasetID, tableID string) string {
+	return datasetID + "." + tableID
+}
+
+// SetTablePartitioning records the TimePartitioning a Tables.insert call
+// declared for one table, so a later GetTable echoes it back. A nil tp
+// clears the entry, matching an unpartitioned table.
+func (s *Store) SetTablePartitioning(datasetID, tableID string, tp *TimePartitioning) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := partitioningKey(datasetID, tableID)
+	if tp == nil {
+		delete(s.partitioning, key)
+		return
+	}
+	s.partitioning[key] = tp
+}
+
 // GetTable returns table metadata by reading it from DuckDB.
 func (s *Store) GetTable(ctx context.Context, projectID, datasetID, tableID string) (*Table, error) {
 	exists, err := s.engine.TableExists(ctx, datasetID, tableID)
@@ -200,15 +244,20 @@ func (s *Store) GetTable(ctx context.Context, projectID, datasetID, tableID stri
 		}
 	}
 
+	s.mu.RLock()
+	tp := s.partitioning[partitioningKey(datasetID, tableID)]
+	s.mu.RUnlock()
+
 	return &Table{
 		TableReference: TableRef{
 			ProjectID: projectID,
 			DatasetID: datasetID,
 			TableID:   tableID,
 		},
-		Schema:       TableSchema{Fields: fields},
-		CreationTime: strconv.FormatInt(time.Now().UnixMilli(), 10),
-		Type:         "TABLE",
+		Schema:           TableSchema{Fields: fields},
+		CreationTime:     strconv.FormatInt(time.Now().UnixMilli(), 10),
+		Type:             "TABLE",
+		TimePartitioning: tp,
 	}, nil
 }
 
