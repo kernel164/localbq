@@ -75,6 +75,9 @@ func init() {
 	// SAFE_CAST(expr AS type) → TRY_CAST(expr AS type)
 	register("safe_cast", lowerSafeCast)
 
+	// TO_JSON_STRING(expr) → CAST(to_json(expr) AS VARCHAR)
+	register("to_json_string", lowerToJSONString)
+
 	// CURRENT_TIMESTAMP() → CURRENT_TIMESTAMP (strip parens)
 	register("current_timestamp_parens", lowerCurrentTimestampParens)
 
@@ -92,6 +95,11 @@ func init() {
 
 	// LOAD DATA INTO table FROM 'file' → INSERT INTO table SELECT * FROM read_parquet/csv/json('file')
 	register("load_data", lowerLoadData)
+
+	// FROM UNNEST(expr) AS alias → FROM (SELECT UNNEST(expr) AS alias)
+	// Must run after backticks/three_part_refs so expr's identifiers are
+	// already in their final quoted form.
+	register("unnest_alias", lowerUnnestAlias)
 }
 
 // --- Rewrite implementations ---
@@ -219,6 +227,25 @@ func lowerSafeCast(sql string) string {
 	return reSafeCast.ReplaceAllString(sql, "TRY_CAST(")
 }
 
+// TO_JSON_STRING(expr) → CAST(to_json(expr) AS VARCHAR). DuckDB's JSON
+// extension has no function of BigQuery's own name, but to_json produces the
+// same JSON text for the STRUCT/ARRAY-of-STRUCT shapes gcpbilling's own
+// labels/system_labels columns carry (confirmed empirically: to_json(a
+// STRUCT(key,value)[]) renders the same [{"key":...,"value":...}] shape
+// TO_JSON_STRING documents) — its return type is DuckDB's own JSON alias for
+// VARCHAR, so the CAST just names that explicitly for a caller expecting a
+// plain string column back.
+var reToJSONString = regexp.MustCompile(
+	`(?i)\bTO_JSON_STRING\s*\(\s*((?:[^(),]+|\((?:[^()]*|\([^()]*\))*\))+?)\s*\)`)
+
+func lowerToJSONString(sql string) string {
+	return reToJSONString.ReplaceAllStringFunc(sql, func(match string) string {
+		m := reToJSONString.FindStringSubmatch(match)
+		expr := strings.TrimSpace(m[1])
+		return "CAST(to_json(" + expr + ") AS VARCHAR)"
+	})
+}
+
 // CURRENT_TIMESTAMP() → CURRENT_TIMESTAMP
 var reCurrentTimestampParens = regexp.MustCompile(`(?i)\bCURRENT_TIMESTAMP\s*\(\s*\)`)
 
@@ -269,6 +296,47 @@ func lowerLegacyTables(sql string) string {
 // Simplified local syntax: LOAD DATA INTO <table> FROM '<local_file>'
 var reLoadData = regexp.MustCompile(
 	`(?i)^\s*LOAD\s+DATA\s+(?:OVERWRITE\s+)?INTO\s+(\S+)\s+FROM\s+'([^']+)'`)
+
+// FROM UNNEST(<array expr>) AS <alias>, GoogleSQL's canonical form for
+// unnesting a REPEATED/ARRAY column (typically inside a correlated scalar
+// subquery, e.g. a per-row credits total: "(SELECT SUM(c.amount) FROM
+// UNNEST(credits) AS c)"). DuckDB's binder refuses this exact shape —
+// "Referenced table \"c\" not found!" — even though the array expression
+// itself resolves fine; wrapping the UNNEST in a derived table's select list
+// instead ("FROM (SELECT UNNEST(credits) AS c)") produces the identical
+// one-column-of-elements table DuckDB does accept, and alias.field access on
+// a STRUCT-typed element works the same way either form. Only the single-part
+// alias form is rewritten: "AS alias(col)" (DuckDB's own two-part alias
+// syntax for naming an unnested struct's columns individually) is left
+// untouched, since it is not the shape that fails and is not something
+// GoogleSQL itself ever emits.
+var reUnnestAlias = regexp.MustCompile(
+	`(?i)\bFROM\s+UNNEST\s*\(((?:[^()]|\([^()]*\))*)\)\s+AS\s+(\w+)`)
+
+func lowerUnnestAlias(sql string) string {
+	matches := reUnnestAlias.FindAllStringSubmatchIndex(sql, -1)
+	if matches == nil {
+		return sql
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		// A two-part alias ("AS alias(col)") is DuckDB-native already and must
+		// not be rewritten; RE2 has no lookahead, so this checks the substring
+		// immediately following the match by hand instead.
+		if strings.HasPrefix(strings.TrimLeft(sql[end:], " \t\n\r"), "(") {
+			continue
+		}
+		arrExpr := sql[m[2]:m[3]]
+		alias := sql[m[4]:m[5]]
+		b.WriteString(sql[last:start])
+		b.WriteString("FROM (SELECT UNNEST(" + arrExpr + ") AS " + alias + ")")
+		last = end
+	}
+	b.WriteString(sql[last:])
+	return b.String()
+}
 
 func lowerLoadData(sql string) string {
 	m := reLoadData.FindStringSubmatch(sql)

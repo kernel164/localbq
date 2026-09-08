@@ -205,6 +205,25 @@ func TestLower(t *testing.T) {
 			want:  "INSERT INTO ds.t SELECT * FROM read_parquet('/tmp/data.parquet')",
 		},
 
+		// UNNEST alias, in a correlated scalar subquery — DuckDB's binder
+		// refuses "FROM UNNEST(x) AS c" directly ("Referenced table \"c\" not
+		// found!"); wrapping it in a derived table's select list is the fix.
+		{
+			name:  "UNNEST alias in correlated subquery, real gcpbilling credits_total shape",
+			input: "SELECT CAST(IFNULL((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM UNNEST(credits) AS c), 0) AS NUMERIC) AS credits_total FROM t",
+			want:  "SELECT CAST(IFNULL((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM (SELECT UNNEST(credits) AS c)), 0) AS NUMERIC) AS credits_total FROM t",
+		},
+		{
+			name:  "UNNEST alias on a qualified column",
+			input: "SELECT (SELECT COUNT(*) FROM UNNEST(t.labels) AS l WHERE l.key = 'env') FROM t",
+			want:  "SELECT (SELECT COUNT(*) FROM (SELECT UNNEST(t.labels) AS l) WHERE l.key = 'env') FROM t",
+		},
+		{
+			name:  "UNNEST two-part alias left untouched",
+			input: "SELECT * FROM UNNEST(credits) AS c(amount)",
+			want:  "SELECT * FROM UNNEST(credits) AS c(amount)",
+		},
+
 		// Passthrough (already valid DuckDB SQL)
 		{
 			name:  "simple select passthrough",
